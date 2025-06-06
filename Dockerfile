@@ -9,6 +9,9 @@ RUN apk add --no-cache \
     harfbuzz \
     ca-certificates \
     ttf-freefont \
+    python3 \
+    make \
+    g++ \
     && rm -rf /var/cache/apk/*
 
 # Configurar Puppeteer para usar Chromium instalado
@@ -21,8 +24,9 @@ WORKDIR /app
 # Copiar archivos de configuración
 COPY package*.json ./
 
-# Instalar dependencias
-RUN npm ci --only=production
+# Limpiar cache de npm y instalar dependencias
+RUN npm cache clean --force && \
+    npm install --production --no-optional
 
 # Copiar código fuente
 COPY . .
