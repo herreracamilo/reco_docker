@@ -1,42 +1,62 @@
 # Usar Node.js LTS
-FROM node:18-alpine
-
-# Instalar dependencias del sistema necesarias para Puppeteer y WPPConnect
+FROM node:21-alpine3.18 as builder
 RUN apk add --no-cache \
-    chromium \
-    nss \
-    freetype \
-    harfbuzz \
-    ca-certificates \
-    ttf-freefont \
-    python3 \
-    make \
-    g++ \
-    ffmpeg \
-    && rm -rf /var/cache/apk/*
+      git \
+      python3 \
+      make \
+      g++ \
+      chromium \
+      nss \
+      freetype \
+      harfbuzz \
+      ca-certificates \
+      libpq-dev \
+      ttf-freefont \
+      udev \
+      ffmpeg
+RUN corepack enable && corepack prepare pnpm@latest --activate
+ENV PNPM_HOME=/usr/local/bin
+RUN addgroup -S pptruser && adduser -S -G pptruser pptruser
+WORKDIR /app
+RUN chown -R pptruser:pptruser /app
+USER pptruser
+COPY package.json *-lock.* ./
+RUN pnpm install --production=false
+COPY . .
 
-# Configurar Puppeteer para usar Chromium instalado
+FROM node:21-alpine3.18
+RUN apk add --no-cache \
+      chromium \
+      nss \
+      freetype \
+      harfbuzz \
+      ca-certificates \
+      libpq-dev \
+      ttf-freefont \
+      udev \
+      ffmpeg
+RUN corepack enable && corepack prepare pnpm@latest --activate
+ENV PNPM_HOME=/usr/local/bin
+RUN addgroup -S pptruser && adduser -S -G pptruser pptruser
+WORKDIR /app
+
+# Crear directorios necesarios con permisos correctos
+RUN mkdir -p /app/sessions /app/data && \
+    chown -R pptruser:pptruser /app
+
+# Copiar solo los archivos necesarios del builder
+COPY --from=builder --chown=pptruser:pptruser /app/node_modules ./node_modules
+COPY --from=builder --chown=pptruser:pptruser /app/package.json /app/pnpm-lock.yaml ./
+COPY --chown=pptruser:pptruser . .
+
+USER pptruser
+
+# Configurar Puppeteer para usar Chromium del sistema
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \
     PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
 
-# Crear directorio de trabajo
-WORKDIR /app
+ARG PORT=3008
+ENV PORT=$PORT
+EXPOSE $PORT
 
-# Copiar archivos de configuración
-COPY package*.json ./
-
-# Limpiar cache de npm y instalar dependencias
-RUN npm cache clean --force && \
-    npm install --production --no-optional
-
-# Copiar código fuente
-COPY . .
-
-# Crear directorio para archivos de sesión y recordatorios
-RUN mkdir -p /app/sessions /app/data
-
-# Exponer puerto
-EXPOSE 3008
-
-# Comando para iniciar la aplicación
 CMD ["npm", "start"]
