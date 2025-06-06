@@ -12,6 +12,7 @@ RUN apk add --no-cache \
     python3 \
     make \
     g++ \
+    ffmpeg \
     && rm -rf /var/cache/apk/*
 
 # Configurar Puppeteer para usar Chromium instalado
