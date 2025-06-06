@@ -42,7 +42,8 @@ WORKDIR /app
 
 # Crear directorios necesarios con permisos correctos
 RUN mkdir -p /app/sessions /app/data && \
-    chown -R pptruser:pptruser /app
+    chown -R pptruser:pptruser /app/sessions /app/data && \
+    chmod -R 755 /app/sessions /app/data
 
 # Copiar solo los archivos necesarios del builder
 COPY --from=builder --chown=pptruser:pptruser /app/node_modules ./node_modules
@@ -51,6 +52,12 @@ COPY --chown=pptruser:pptruser . .
 
 USER pptruser
 
+# Configuración de zona horaria
+ENV TZ=America/Argentina/Buenos_Aires
+RUN apk add --no-cache tzdata && \
+    cp /usr/share/zoneinfo/$TZ /etc/localtime && \
+    echo $TZ > /etc/timezone && \
+    apk del tzdata
 # Configurar Puppeteer para usar Chromium del sistema
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \
     PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
