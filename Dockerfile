@@ -42,8 +42,8 @@ WORKDIR /app
 
 # Crear directorios necesarios con permisos correctos
 RUN mkdir -p /app/sessions /app/data && \
-    chown -R pptruser:pptruser /app && \  # ¡Cambia esto para aplicar a TODO /app!
-
+    chown -R pptruser:pptruser /app && \
+    chmod -R 755 /app
 
 # Copiar solo los archivos necesarios del builder
 COPY --from=builder --chown=pptruser:pptruser /app/node_modules ./node_modules
