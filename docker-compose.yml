@@ -1,0 +1,25 @@
+version: '3.8'
+
+services:
+  whatsapp-bot:
+    build: .
+    container_name: whatsapp-bot
+    ports:
+      - "3008:3008"
+    volumes:
+      # Persistir datos de sesión de WhatsApp
+      - ./sessions:/app/sessions 
+      # Persistir archivo de recordatorios
+      - ./data:/app/data
+    environment:
+      - NODE_ENV=production
+      - PORT=3008
+    restart: unless-stopped
+    # Configuración adicional para Puppeteer en Docker
+    cap_add:
+      - SYS_ADMIN
+    security_opt:
+      - seccomp:unconfined
+    # Limitar recursos (opcional)
+    mem_limit: 1g
+    cpu_count: 1
