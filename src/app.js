@@ -132,7 +132,7 @@ const finalizarRecordatorioFlow = addKeyword(['finalizar_recordatorio'])
     await state.clear();
   });
 
-const recordatorioFlow = addKeyword(['recordatorio', 'r'])
+const recordatorioFlowExacto = addKeyword(['recordatorio', 'r'], { sensitive: true })
   .addAnswer('📝 *¿Cuál es el título del recordatorio?*', 
     { capture: true }, 
     async (ctx, { state }) => {
