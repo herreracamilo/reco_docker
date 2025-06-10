@@ -186,7 +186,7 @@ const solicitarFechaFlow = addKeyword(['fecha_invalida'])
     });
 
 // Flujo principal de recordatorios (cambiar keyword para evitar conflictos)
-const recordatorioFlow = addKeyword(['!recordatorio', '!r'])
+const recordatorioFlow = addKeyword(['.recordatorio', '.r'])
   .addAnswer('📝 *¿Cuál es el título del recordatorio?*', 
     { capture: true }, 
     async (ctx, { state }) => {
