@@ -17,7 +17,7 @@ if (!fs.existsSync(DATA_DIR)) {
     console.log('📁 Directorio data creado')
 }
 
-// FUNCIONES AUXILIARES (mover al inicio)
+// FUNCIONES AUXILIARES
 function normalizarTexto(texto) {
   return texto
     .normalize("NFD")
@@ -46,7 +46,6 @@ function parsearFecha(input) {
     const [dia, mes, anio] = input.split('/');
     const fecha = new Date(`${anio}-${mes}-${dia}T12:00:00`);
     
-    // Verificar que la fecha sea válida y coherente
     if (!isNaN(fecha.getTime()) && 
         fecha.getDate() == dia && 
         fecha.getMonth() + 1 == mes) {
@@ -74,7 +73,6 @@ const guardaRecordatorio = (recordatorio) => {
     try {
         let recordatorios = [];
         
-        // Verificar si el archivo existe
         if (fs.existsSync(RECORDATORIOS_FILE)) {
             const data = fs.readFileSync(RECORDATORIOS_FILE, 'utf-8');
             recordatorios = data ? JSON.parse(data) : [];
@@ -113,57 +111,59 @@ const actualizarRecordatorios = (recordatorios) => {
     }
 };
 
-// FLUJOS (declarar todos antes de usar)
-// Flujo para finalizar y guardar el recordatorio
-const finalizarRecordatorioFlow = addKeyword(['finalizar_recordatorio'])
-  .addAction(async (ctx, { state, flowDynamic }) => {
-    const { titulo, descripcion, fecha, hora } = state.getMyState();
-    
-    if (!titulo || !descripcion || !fecha || !hora) {
-      return flowDynamic('❌ No se pudo crear el recordatorio. Faltan datos.');
-    }
-
-    const exito = guardaRecordatorio({
-      id: Date.now().toString(),
-      chatId: ctx.from,
-      titulo,
-      descripcion,
-      fecha,
-      hora,
-      enviado: false
-    });
-
-    if (exito) {
-      await flowDynamic(`✅ *Recordatorio guardado:*\n📌 *Titulo:* ${titulo}\n ✏️ *Descripción:* ${descripcion}\n 📅 *Fecha:* ${fecha}\n⏰ *Hora:* ${hora}`);
-    } else {
-      await flowDynamic('❌ Error al guardar. Intenta nuevamente.');
-    }
-    
-    // Limpiar el estado
-    await state.clear();
-  });
-
-// Flujo separado para solicitar hora
-const solicitarHoraFlow = addKeyword(['solicitar_hora'])
-  .addAnswer('⏰ *Hora (HH:MM):*',
-    { capture: true },
-    async (ctx, { state, flowDynamic, gotoFlow }) => {
-      if (!/^([01]?[0-9]|2[0-3]):[0-5][0-9]$/.test(ctx.body)) {
-        await flowDynamic([
-          `❌ Formato de hora inválido. Usa HH:MM (ej: 14:30)\n`,
-          `Por favor, ingresa una hora válida:`
-        ]);
-        return gotoFlow(solicitarHoraFlow);
+// FLUJO PRINCIPAL DE RECORDATORIOS - VERSIÓN CORREGIDA
+const recordatorioFlow = addKeyword(['.recordatorio', '.r'])
+  .addAnswer('📝 *¿Cuál es el título del recordatorio?*', 
+    { capture: true }, 
+    async (ctx, { state, flowDynamic }) => {
+      // Verificar si ya hay un proceso en curso
+      const estadoActual = state.getMyState();
+      if (estadoActual && Object.keys(estadoActual).length > 0) {
+        await flowDynamic('⚠️ Ya tienes un recordatorio en proceso. Completémoslo primero.');
+        return;
       }
-      await state.update({ hora: ctx.body });
-      return gotoFlow(finalizarRecordatorioFlow);
-    });
-
-// Flujo separado para solicitar fecha nuevamente
-const solicitarFechaFlow = addKeyword(['fecha_invalida'])
+      
+      // Limpiar estado anterior por seguridad
+      await state.clear();
+      await state.update({ 
+        titulo: ctx.body.trim(),
+        paso: 'titulo_completado',
+        iniciado: Date.now()
+      });
+      
+      console.log(`📝 Título guardado: ${ctx.body.trim()}`);
+    })
+  .addAnswer('✏️ *Describe el recordatorio:*', 
+    { capture: true }, 
+    async (ctx, { state, flowDynamic }) => {
+      const estadoActual = state.getMyState();
+      
+      // Verificar que estemos en el paso correcto
+      if (!estadoActual.titulo || estadoActual.paso !== 'titulo_completado') {
+        await flowDynamic('❌ Error en el proceso. Vamos a empezar de nuevo.');
+        await state.clear();
+        return;
+      }
+      
+      await state.update({ 
+        descripcion: ctx.body.trim(),
+        paso: 'descripcion_completada'
+      });
+      
+      console.log(`✏️ Descripción guardada: ${ctx.body.trim()}`);
+    })
   .addAnswer('📅 *Fecha (DD/MM/AAAA, "hoy", "mañana", "en X días"):*',
     { capture: true },
-    async (ctx, { state, flowDynamic, gotoFlow }) => {
+    async (ctx, { state, flowDynamic }) => {
+      const estadoActual = state.getMyState();
+      
+      // Verificar que estemos en el paso correcto
+      if (!estadoActual.descripcion || estadoActual.paso !== 'descripcion_completada') {
+        await flowDynamic('❌ Error en el proceso. Vamos a empezar de nuevo.');
+        await state.clear();
+        return;
+      }
+
       try {
         const fechaInput = normalizarTexto(ctx.body);
         const fechaCalculada = parsearFecha(fechaInput);
@@ -171,35 +171,144 @@ const solicitarFechaFlow = addKeyword(['fecha_invalida'])
         if (!fechaCalculada) {
           await flowDynamic([
             '❌ *Fecha no válida*',
-            `*Ejemplos aceptados:*\n *• hoy*\n *• mañana*\n *• en 3 días* \n *• 25/12/2023 (DD/MM/AAAA)*\n Por favor, ingresa una fecha válida:`
+            `*Ejemplos aceptados:*\n• *hoy*\n• *mañana*\n• *en 3 días*\n• *25/12/2024 (DD/MM/AAAA)*`,
+            `Por favor, ingresa una fecha válida:`
           ]);
-          return gotoFlow(solicitarFechaFlow);
+          return; // Mantener en el mismo paso para reintentar
         }
         
-        await state.update({ fecha: fechaCalculada });
-        return gotoFlow(solicitarHoraFlow);
+        await state.update({ 
+          fecha: fechaCalculada,
+          paso: 'fecha_completada'
+        });
+        
+        console.log(`📅 Fecha guardada: ${fechaCalculada}`);
       } catch (error) {
         console.error('Error procesando fecha:', error);
-        await flowDynamic('⚠️ Ocurrió un error. Por favor intenta nuevamente.');
-        return gotoFlow(solicitarFechaFlow);
+        await flowDynamic('⚠️ Ocurrió un error. Por favor intenta nuevamente con la fecha.');
       }
-    });
-
-// Flujo principal de recordatorios (cambiar keyword para evitar conflictos)
-const recordatorioFlow = addKeyword(['.recordatorio', '.r'])
-  .addAnswer('📝 *¿Cuál es el título del recordatorio?*', 
-    { capture: true }, 
-    async (ctx, { state }) => {
-      await state.update({ titulo: ctx.body });
     })
-  .addAnswer('✏️ *Describe el recordatorio:*', 
-    { capture: true }, 
-    async (ctx, { state, gotoFlow }) => {
-      await state.update({ descripcion: ctx.body });
-      return gotoFlow(solicitarFechaFlow);
+  .addAnswer('⏰ *Hora (HH:MM):*',
+    { capture: true },
+    async (ctx, { state, flowDynamic }) => {
+      const estadoActual = state.getMyState();
+      
+      // Verificar que estemos en el paso correcto
+      if (!estadoActual.fecha || estadoActual.paso !== 'fecha_completada') {
+        await flowDynamic('❌ Error en el proceso. Vamos a empezar de nuevo.');
+        await state.clear();
+        return;
+      }
+
+      if (!/^([01]?[0-9]|2[0-3]):[0-5][0-9]$/.test(ctx.body.trim())) {
+        await flowDynamic([
+          `❌ Formato de hora inválido. Usa HH:MM (ej: 14:30)`,
+          `Por favor, ingresa una hora válida:`
+        ]);
+        return; // Mantener en el mismo paso para reintentar
+      }
+
+      const hora = ctx.body.trim();
+      await state.update({ 
+        hora: hora,
+        paso: 'completado'
+      });
+
+      // Procesar y guardar el recordatorio
+      const { titulo, descripcion, fecha } = estadoActual;
+      
+      const exito = guardaRecordatorio({
+        id: Date.now().toString(),
+        chatId: ctx.from,
+        titulo,
+        descripcion,
+        fecha,
+        hora,
+        enviado: false,
+        creado: new Date().toISOString()
+      });
+
+      if (exito) {
+        await flowDynamic([
+          `✅ *Recordatorio guardado exitosamente:*`,
+          `📌 *Título:* ${titulo}`,
+          `✏️ *Descripción:* ${descripcion}`,
+          `📅 *Fecha:* ${fecha}`,
+          `⏰ *Hora:* ${hora}`,
+          ``,
+          `🔔 Te recordaré el ${fecha} a las ${hora}`
+        ]);
+        
+        console.log(`✅ Recordatorio completado para ${ctx.from}`);
+      } else {
+        await flowDynamic('❌ Error al guardar el recordatorio. Por favor intenta nuevamente con .r');
+      }
+      
+      // Limpiar el estado al finalizar
+      await state.clear();
     });
 
-// FUNCIÓN CRON
+// Flujo para cancelar recordatorio en curso
+const cancelarFlow = addKeyword(['.cancelar', 'cancelar'])
+  .addAction(async (ctx, { state, flowDynamic }) => {
+    const estadoActual = state.getMyState();
+    
+    if (estadoActual && Object.keys(estadoActual).length > 0) {
+      await state.clear();
+      await flowDynamic('❌ Recordatorio cancelado. Puedes empezar uno nuevo con .r');
+    } else {
+      await flowDynamic('ℹ️ No hay ningún recordatorio en proceso para cancelar.');
+    }
+  });
+
+// Flujo para ver recordatorios pendientes
+const verRecordatoriosFlow = addKeyword(['.ver', '.lista'])
+  .addAction(async (ctx, { flowDynamic }) => {
+    try {
+      const recordatorios = leerRecordatorios();
+      const recordatoriosPendientes = recordatorios.filter(r => 
+        !r.enviado && r.chatId === ctx.from
+      );
+
+      if (recordatoriosPendientes.length === 0) {
+        await flowDynamic('📋 No tienes recordatorios pendientes.');
+        return;
+      }
+
+      let mensaje = '📋 *Tus recordatorios pendientes:*\n\n';
+      recordatoriosPendientes.forEach((r, index) => {
+        mensaje += `${index + 1}. 📌 *${r.titulo}*\n`;
+        mensaje += `   📅 ${r.fecha} ⏰ ${r.hora}\n`;
+        mensaje += `   ✏️ ${r.descripcion}\n\n`;
+      });
+
+      await flowDynamic(mensaje);
+    } catch (error) {
+      console.error('Error listando recordatorios:', error);
+      await flowDynamic('❌ Error al obtener los recordatorios.');
+    }
+  });
+
+// Flujo de ayuda
+const ayudaFlow = addKeyword(['.ayuda', '.help'])
+  .addAction(async (ctx, { flowDynamic }) => {
+    await flowDynamic([
+      '🤖 *Comandos disponibles:*',
+      '',
+      '📝 *.r* o *.recordatorio* - Crear nuevo recordatorio',
+      '📋 *.ver* o *.lista* - Ver recordatorios pendientes',
+      '❌ *.cancelar* - Cancelar recordatorio en curso',
+      '❓ *.ayuda* - Mostrar esta ayuda',
+      '',
+      '💡 *Formatos de fecha:*',
+      '• hoy, mañana, en 3 días',
+      '• DD/MM/AAAA (ej: 25/12/2024)',
+      '',
+      '⏰ *Formato de hora:* HH:MM (ej: 14:30)'
+    ]);
+  });
+
+// FUNCIÓN CRON MEJORADA
 const iniciarCronRecordatorios = (adapterProvider) => {
     console.log('🕒 Iniciando cron job de recordatorios...');
 
@@ -209,11 +318,12 @@ const iniciarCronRecordatorios = (adapterProvider) => {
             const recordatorios = leerRecordatorios();
             let hayActualizaciones = false;
 
-            console.log(`📋 Revisando ${recordatorios.length} recordatorios...`);
+            console.log(`📋 Revisando ${recordatorios.length} recordatorios a las ${ahora.toLocaleTimeString()}`);
 
+            // Verificar que el proveedor esté disponible
             const bot = adapterProvider.getInstance();
             if (!bot) {
-                console.error('❌ Bot es undefined en cron. Asegurate de que WPPConnect esté conectado.');
+                console.error('❌ Bot no disponible en cron job');
                 return;
             }
 
@@ -225,34 +335,44 @@ const iniciarCronRecordatorios = (adapterProvider) => {
                     const [hora, minuto] = recordatorio.hora.split(':');
                     const fechaRecordatorio = new Date(anio, mes - 1, dia, hora, minuto);
 
-                    if (ahora >= fechaRecordatorio) {
-                        console.log(`📤 Enviando recordatorio: ${recordatorio.titulo}`);
+                    // Agregar margen de 1 minuto para evitar problemas de sincronización
+                    const diferencia = ahora.getTime() - fechaRecordatorio.getTime();
+                    
+                    if (diferencia >= 0 && diferencia < 60000) { // Entre 0 y 60 segundos
+                        console.log(`📤 Enviando recordatorio: ${recordatorio.titulo} a ${recordatorio.chatId}`);
 
-                        await bot.sendText(
-                            recordatorio.chatId,
-                            `🔔 *Recordatorio:* ${recordatorio.titulo}\n ✏️ *Descripción:* ${recordatorio.descripcion}`
-                        );
+                        const mensaje = [
+                            `🔔 *¡RECORDATORIO!*`,
+                            ``,
+                            `📌 *${recordatorio.titulo}*`,
+                            `✏️ ${recordatorio.descripcion}`,
+                            ``,
+                            `📅 Programado para: ${recordatorio.fecha} a las ${recordatorio.hora}`
+                        ].join('\n');
+
+                        await bot.sendText(recordatorio.chatId, mensaje);
 
                         recordatorio.enviado = true;
+                        recordatorio.fechaEnvio = ahora.toISOString();
                         hayActualizaciones = true;
 
-                        console.log(`✅ Recordatorio enviado: ${recordatorio.titulo}`);
+                        console.log(`✅ Recordatorio enviado exitosamente: ${recordatorio.titulo}`);
                     }
                 } catch (errorRecordatorio) {
-                    console.error('❌ Error procesando recordatorio individual:', errorRecordatorio);
+                    console.error('❌ Error procesando recordatorio:', recordatorio.id, errorRecordatorio);
                 }
             }
 
             if (hayActualizaciones) {
                 actualizarRecordatorios(recordatorios);
-                console.log('💾 Recordatorios actualizados');
+                console.log('💾 Archivo de recordatorios actualizado');
             }
         } catch (error) {
-            console.error('❌ Error en cron job de recordatorios:', error);
+            console.error('❌ Error general en cron job:', error);
         }
     });
 
-    console.log('✅ Cron job de recordatorios iniciado correctamente');
+    console.log('✅ Cron job iniciado - Revisión cada minuto');
 };
 
 // FUNCIÓN MAIN
@@ -260,10 +380,11 @@ const main = async () => {
     try {
         const adapterFlow = createFlow([
             recordatorioFlow,
-            solicitarFechaFlow,
-            solicitarHoraFlow,
-            finalizarRecordatorioFlow
+            cancelarFlow,
+            verRecordatoriosFlow,
+            ayudaFlow
         ])
+        
         const adapterProvider = createProvider(Provider)
         const adapterDB = new Database()
 
@@ -273,9 +394,10 @@ const main = async () => {
             database: adapterDB,
         })
 
+        // Iniciar el cron job después de crear el bot
         iniciarCronRecordatorios(adapterProvider);
 
-        // Endpoints de la API
+        // API Endpoints
         adapterProvider.server.post(
             '/v1/messages',
             handleCtx(async (bot, req, res) => {
@@ -316,10 +438,11 @@ const main = async () => {
         )
 
         httpServer(+PORT)
-        console.log(`🚀 Bot iniciado en puerto ${PORT}`);
+        console.log(`🚀 Bot iniciado correctamente en puerto ${PORT}`);
+        console.log(`📱 Comandos disponibles: .r, .ver, .cancelar, .ayuda`);
         
     } catch (error) {
-        console.error('❌ Error iniciando el bot:', error);
+        console.error('❌ Error crítico iniciando el bot:', error);
         process.exit(1);
     }
 }
