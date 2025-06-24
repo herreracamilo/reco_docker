@@ -39,8 +39,9 @@ RUN apk add --no-cache \
 RUN corepack enable && corepack prepare pnpm@latest --activate
 ENV PNPM_HOME=/usr/local/bin
 
-# Crear grupo y usuario con ID específicos para evitar conflictos
-RUN addgroup -g 1000 pptruser && adduser -u 1000 -G pptruser -s /bin/sh -D pptruser
+# Crear grupo y usuario con manejo de conflictos
+RUN addgroup pptruser || true && \
+    adduser -G pptruser -s /bin/sh -D pptruser || true
 
 WORKDIR /app
 
