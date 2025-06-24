@@ -11,10 +11,29 @@ const PORT = process.env.PORT ?? 3008
 const DATA_DIR = path.join(process.cwd(), 'data')
 const RECORDATORIOS_FILE = path.join(DATA_DIR, 'recordatorios.json')
 
-// Crear directorio data si no existe
+// Crear directorio data si no existe con permisos correctos
 if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true })
-    console.log('📁 Directorio data creado')
+    try {
+        fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o755 })
+        console.log('📁 Directorio data creado con permisos 755')
+        
+        // Verificar permisos de escritura
+        fs.accessSync(DATA_DIR, fs.constants.W_OK)
+        console.log('✅ Permisos de escritura verificados')
+    } catch (error) {
+        console.error('❌ Error creando directorio o verificando permisos:', error)
+        process.exit(1)
+    }
+}
+
+// Inicializar archivo de recordatorios si no existe
+if (!fs.existsSync(RECORDATORIOS_FILE)) {
+    try {
+        fs.writeFileSync(RECORDATORIOS_FILE, '[]', { mode: 0o644 })
+        console.log('📄 Archivo de recordatorios inicializado')
+    } catch (error) {
+        console.error('❌ Error inicializando archivo de recordatorios:', error)
+    }
 }
 
 // FUNCIONES AUXILIARES
@@ -68,7 +87,7 @@ function agregarDias(fecha, dias) {
   return nuevaFecha;
 }
 
-// FUNCIONES DE ARCHIVO
+// FUNCIONES DE ARCHIVO CON MEJOR MANEJO DE ERRORES
 const guardaRecordatorio = (recordatorio) => {
     try {
         let recordatorios = [];
@@ -79,11 +98,22 @@ const guardaRecordatorio = (recordatorio) => {
         }
         
         recordatorios.push(recordatorio);
-        fs.writeFileSync(RECORDATORIOS_FILE, JSON.stringify(recordatorios, null, 2));
-        console.log('Recordatorio guardado correctamente:', recordatorio);
+        
+        // Intentar escribir con permisos específicos
+        fs.writeFileSync(RECORDATORIOS_FILE, JSON.stringify(recordatorios, null, 2), { 
+            mode: 0o644,
+            flag: 'w'
+        });
+        
+        console.log('✅ Recordatorio guardado correctamente:', recordatorio.titulo);
         return true;
     } catch (error) {
-        console.error('Error guardando recordatorio:', error);
+        console.error('❌ Error guardando recordatorio:', error);
+        console.error('Detalles del error:', {
+            code: error.code,
+            path: error.path,
+            message: error.message
+        });
         return false;
     }
 };
@@ -96,137 +126,181 @@ const leerRecordatorios = () => {
         const data = fs.readFileSync(RECORDATORIOS_FILE, 'utf-8');
         return data ? JSON.parse(data) : [];
     } catch (error) {
-        console.error('Error leyendo recordatorios:', error);
+        console.error('❌ Error leyendo recordatorios:', error);
         return [];
     }
 };
 
 const actualizarRecordatorios = (recordatorios) => {
     try {
-        fs.writeFileSync(RECORDATORIOS_FILE, JSON.stringify(recordatorios, null, 2));
+        fs.writeFileSync(RECORDATORIOS_FILE, JSON.stringify(recordatorios, null, 2), {
+            mode: 0o644,
+            flag: 'w'
+        });
         return true;
     } catch (error) {
-        console.error('Error actualizando recordatorios:', error);
+        console.error('❌ Error actualizando recordatorios:', error);
         return false;
     }
 };
 
-// FLUJO PRINCIPAL DE RECORDATORIOS - VERSIÓN CORREGIDA
+// ESTADO GLOBAL PARA MANEJAR PROCESOS EN CURSO
+const procesosEnCurso = new Map();
+
+// FLUJO PRINCIPAL DE RECORDATORIOS - VERSIÓN MEJORADA
 const recordatorioFlow = addKeyword(['.recordatorio', '.r'])
+  .addAction(async (ctx, { state, flowDynamic }) => {
+    const userId = ctx.from;
+    
+    // Verificar si hay un proceso en curso
+    if (procesosEnCurso.has(userId)) {
+      await flowDynamic('⚠️ Ya tienes un recordatorio en proceso. Usa ".cancelar" para cancelarlo o complétalo primero.');
+      return { endFlow: true };
+    }
+    
+    // Iniciar nuevo proceso
+    procesosEnCurso.set(userId, {
+      paso: 'esperando_titulo',
+      iniciado: Date.now(),
+      datos: {}
+    });
+    
+    await state.clear();
+    console.log(`🔄 Iniciando proceso de recordatorio para ${userId}`);
+  })
   .addAnswer('📝 *¿Cuál es el título del recordatorio?*', 
     { capture: true }, 
-    async (ctx, { state, flowDynamic }) => {
-      // Verificar si ya hay un proceso en curso
-      const estadoActual = state.getMyState();
-      if (estadoActual && Object.keys(estadoActual).length > 0) {
-        await flowDynamic('⚠️ Ya tienes un recordatorio en proceso. Completémoslo primero.');
+    async (ctx, { state, flowDynamic, endFlow }) => {
+      const userId = ctx.from;
+      const proceso = procesosEnCurso.get(userId);
+      
+      if (!proceso || proceso.paso !== 'esperando_titulo') {
+        await flowDynamic('❌ Error en el proceso. Empezando de nuevo...');
+        procesosEnCurso.delete(userId);
+        return endFlow();
+      }
+      
+      const titulo = ctx.body.trim();
+      
+      // Verificar que no sea un comando
+      if (titulo.startsWith('.')) {
+        await flowDynamic('❌ El título no puede ser un comando. Por favor ingresa un título válido:');
         return;
       }
       
-      // Limpiar estado anterior por seguridad
-      await state.clear();
-      await state.update({ 
-        titulo: ctx.body.trim(),
-        paso: 'titulo_completado',
-        iniciado: Date.now()
-      });
+      proceso.datos.titulo = titulo;
+      proceso.paso = 'esperando_descripcion';
+      procesosEnCurso.set(userId, proceso);
       
-      console.log(`📝 Título guardado: ${ctx.body.trim()}`);
+      console.log(`📝 Título guardado para ${userId}: ${titulo}`);
     })
   .addAnswer('✏️ *Describe el recordatorio:*', 
     { capture: true }, 
-    async (ctx, { state, flowDynamic }) => {
-      const estadoActual = state.getMyState();
+    async (ctx, { state, flowDynamic, endFlow }) => {
+      const userId = ctx.from;
+      const proceso = procesosEnCurso.get(userId);
       
-      // Verificar que estemos en el paso correcto
-      if (!estadoActual.titulo || estadoActual.paso !== 'titulo_completado') {
-        await flowDynamic('❌ Error en el proceso. Vamos a empezar de nuevo.');
-        await state.clear();
+      if (!proceso || proceso.paso !== 'esperando_descripcion') {
+        await flowDynamic('❌ Error en el proceso. Empezando de nuevo...');
+        procesosEnCurso.delete(userId);
+        return endFlow();
+      }
+      
+      const descripcion = ctx.body.trim();
+      
+      // Verificar que no sea un comando
+      if (descripcion.startsWith('.')) {
+        await flowDynamic('❌ La descripción no puede ser un comando. Por favor ingresa una descripción válida:');
         return;
       }
       
-      await state.update({ 
-        descripcion: ctx.body.trim(),
-        paso: 'descripcion_completada'
-      });
+      proceso.datos.descripcion = descripcion;
+      proceso.paso = 'esperando_fecha';
+      procesosEnCurso.set(userId, proceso);
       
-      console.log(`✏️ Descripción guardada: ${ctx.body.trim()}`);
+      console.log(`✏️ Descripción guardada para ${userId}: ${descripcion}`);
     })
   .addAnswer('📅 *Fecha (DD/MM/AAAA, "hoy", "mañana", "en X días"):*',
     { capture: true },
-    async (ctx, { state, flowDynamic }) => {
-      const estadoActual = state.getMyState();
+    async (ctx, { state, flowDynamic, endFlow }) => {
+      const userId = ctx.from;
+      const proceso = procesosEnCurso.get(userId);
       
-      // Verificar que estemos en el paso correcto
-      if (!estadoActual.descripcion || estadoActual.paso !== 'descripcion_completada') {
-        await flowDynamic('❌ Error en el proceso. Vamos a empezar de nuevo.');
-        await state.clear();
-        return;
+      if (!proceso || proceso.paso !== 'esperando_fecha') {
+        await flowDynamic('❌ Error en el proceso. Empezando de nuevo...');
+        procesosEnCurso.delete(userId);
+        return endFlow();
       }
 
-      try {
-        const fechaInput = normalizarTexto(ctx.body);
-        const fechaCalculada = parsearFecha(fechaInput);
-        
-        if (!fechaCalculada) {
-          await flowDynamic([
-            '❌ *Fecha no válida*',
-            `*Ejemplos aceptados:*\n• *hoy*\n• *mañana*\n• *en 3 días*\n• *25/12/2024 (DD/MM/AAAA)*`,
-            `Por favor, ingresa una fecha válida:`
-          ]);
-          return; // Mantener en el mismo paso para reintentar
-        }
-        
-        await state.update({ 
-          fecha: fechaCalculada,
-          paso: 'fecha_completada'
-        });
-        
-        console.log(`📅 Fecha guardada: ${fechaCalculada}`);
-      } catch (error) {
-        console.error('Error procesando fecha:', error);
-        await flowDynamic('⚠️ Ocurrió un error. Por favor intenta nuevamente con la fecha.');
+      const fechaInput = normalizarTexto(ctx.body);
+      
+      // Verificar que no sea un comando
+      if (ctx.body.trim().startsWith('.')) {
+        await flowDynamic('❌ Por favor ingresa una fecha válida, no un comando:');
+        return;
       }
+      
+      const fechaCalculada = parsearFecha(fechaInput);
+      
+      if (!fechaCalculada) {
+        await flowDynamic([
+          '❌ *Fecha no válida*',
+          `*Ejemplos aceptados:*\n• *hoy*\n• *mañana*\n• *en 3 días*\n• *25/12/2024 (DD/MM/AAAA)*`,
+          `Por favor, ingresa una fecha válida:`
+        ]);
+        return;
+      }
+      
+      proceso.datos.fecha = fechaCalculada;
+      proceso.paso = 'esperando_hora';
+      procesosEnCurso.set(userId, proceso);
+      
+      console.log(`📅 Fecha guardada para ${userId}: ${fechaCalculada}`);
     })
   .addAnswer('⏰ *Hora (HH:MM):*',
     { capture: true },
-    async (ctx, { state, flowDynamic }) => {
-      const estadoActual = state.getMyState();
+    async (ctx, { state, flowDynamic, endFlow }) => {
+      const userId = ctx.from;
+      const proceso = procesosEnCurso.get(userId);
       
-      // Verificar que estemos en el paso correcto
-      if (!estadoActual.fecha || estadoActual.paso !== 'fecha_completada') {
-        await flowDynamic('❌ Error en el proceso. Vamos a empezar de nuevo.');
-        await state.clear();
+      if (!proceso || proceso.paso !== 'esperando_hora') {
+        await flowDynamic('❌ Error en el proceso. Empezando de nuevo...');
+        procesosEnCurso.delete(userId);
+        return endFlow();
+      }
+
+      const horaInput = ctx.body.trim();
+      
+      // Verificar que no sea un comando
+      if (horaInput.startsWith('.')) {
+        await flowDynamic('❌ Por favor ingresa una hora válida, no un comando:');
         return;
       }
 
-      if (!/^([01]?[0-9]|2[0-3]):[0-5][0-9]$/.test(ctx.body.trim())) {
+      if (!/^([01]?[0-9]|2[0-3]):[0-5][0-9]$/.test(horaInput)) {
         await flowDynamic([
           `❌ Formato de hora inválido. Usa HH:MM (ej: 14:30)`,
           `Por favor, ingresa una hora válida:`
         ]);
-        return; // Mantener en el mismo paso para reintentar
+        return;
       }
 
-      const hora = ctx.body.trim();
-      await state.update({ 
-        hora: hora,
-        paso: 'completado'
-      });
+      // Completar el recordatorio
+      const { titulo, descripcion, fecha } = proceso.datos;
+      const hora = horaInput;
 
-      // Procesar y guardar el recordatorio
-      const { titulo, descripcion, fecha } = estadoActual;
-      
-      const exito = guardaRecordatorio({
+      const recordatorio = {
         id: Date.now().toString(),
-        chatId: ctx.from,
+        chatId: userId,
         titulo,
         descripcion,
         fecha,
         hora,
         enviado: false,
         creado: new Date().toISOString()
-      });
+      };
+
+      const exito = guardaRecordatorio(recordatorio);
 
       if (exito) {
         await flowDynamic([
@@ -239,21 +313,23 @@ const recordatorioFlow = addKeyword(['.recordatorio', '.r'])
           `🔔 Te recordaré el ${fecha} a las ${hora}`
         ]);
         
-        console.log(`✅ Recordatorio completado para ${ctx.from}`);
+        console.log(`✅ Recordatorio completado para ${userId}`);
       } else {
-        await flowDynamic('❌ Error al guardar el recordatorio. Por favor intenta nuevamente con .r');
+        await flowDynamic('❌ Error al guardar el recordatorio. Verifica los permisos del archivo. Intenta nuevamente con .r');
       }
       
-      // Limpiar el estado al finalizar
+      // Limpiar el proceso
+      procesosEnCurso.delete(userId);
       await state.clear();
     });
 
-// Flujo para cancelar recordatorio en curso
+// Flujo para cancelar recordatorio en curso - MEJORADO
 const cancelarFlow = addKeyword(['.cancelar', 'cancelar'])
   .addAction(async (ctx, { state, flowDynamic }) => {
-    const estadoActual = state.getMyState();
+    const userId = ctx.from;
     
-    if (estadoActual && Object.keys(estadoActual).length > 0) {
+    if (procesosEnCurso.has(userId)) {
+      procesosEnCurso.delete(userId);
       await state.clear();
       await flowDynamic('❌ Recordatorio cancelado. Puedes empezar uno nuevo con .r');
     } else {
@@ -284,7 +360,7 @@ const verRecordatoriosFlow = addKeyword(['.ver', '.lista'])
 
       await flowDynamic(mensaje);
     } catch (error) {
-      console.error('Error listando recordatorios:', error);
+      console.error('❌ Error listando recordatorios:', error);
       await flowDynamic('❌ Error al obtener los recordatorios.');
     }
   });
@@ -304,7 +380,9 @@ const ayudaFlow = addKeyword(['.ayuda', '.help'])
       '• hoy, mañana, en 3 días',
       '• DD/MM/AAAA (ej: 25/12/2024)',
       '',
-      '⏰ *Formato de hora:* HH:MM (ej: 14:30)'
+      '⏰ *Formato de hora:* HH:MM (ej: 14:30)',
+      '',
+      '⚠️ *Importante:* No uses comandos (.) como respuestas'
     ]);
   });
 
@@ -375,9 +453,31 @@ const iniciarCronRecordatorios = (adapterProvider) => {
     console.log('✅ Cron job iniciado - Revisión cada minuto');
 };
 
+// Limpiar procesos colgados cada 30 minutos
+setInterval(() => {
+    const ahora = Date.now();
+    for (const [userId, proceso] of procesosEnCurso.entries()) {
+        // Limpiar procesos de más de 30 minutos
+        if (ahora - proceso.iniciado > 30 * 60 * 1000) {
+            procesosEnCurso.delete(userId);
+            console.log(`🧹 Proceso limpiado para usuario ${userId} (timeout)`);
+        }
+    }
+}, 30 * 60 * 1000);
+
 // FUNCIÓN MAIN
 const main = async () => {
     try {
+        // Verificar permisos al inicio
+        console.log('🔍 Verificando permisos de directorios...');
+        try {
+            fs.accessSync(DATA_DIR, fs.constants.R_OK | fs.constants.W_OK);
+            console.log('✅ Permisos de lectura/escritura verificados para', DATA_DIR);
+        } catch (error) {
+            console.error('❌ Sin permisos de lectura/escritura en', DATA_DIR);
+            console.error('Error:', error.message);
+        }
+
         const adapterFlow = createFlow([
             recordatorioFlow,
             cancelarFlow,
@@ -440,6 +540,8 @@ const main = async () => {
         httpServer(+PORT)
         console.log(`🚀 Bot iniciado correctamente en puerto ${PORT}`);
         console.log(`📱 Comandos disponibles: .r, .ver, .cancelar, .ayuda`);
+        console.log(`📁 Directorio de datos: ${DATA_DIR}`);
+        console.log(`📄 Archivo de recordatorios: ${RECORDATORIOS_FILE}`);
         
     } catch (error) {
         console.error('❌ Error crítico iniciando el bot:', error);
